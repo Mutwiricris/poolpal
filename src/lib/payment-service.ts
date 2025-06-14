@@ -1,0 +1,528 @@
+import { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, Timestamp, DocumentData, QueryDocumentSnapshot } from 'firebase/firestore';
+import { firestore } from './firebase';
+import { toast } from 'sonner';
+
+// Payment status options
+export enum PaymentStatus {
+  PENDING = 'pending',
+  PROCESSING = 'processing',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  REFUNDED = 'refunded',
+  CANCELLED = 'cancelled'
+}
+
+// Payment method options
+export enum PaymentMethod {
+  CREDIT_CARD = 'credit_card',
+  BANK_TRANSFER = 'bank_transfer',
+  PAYPAL = 'paypal',
+  CASH = 'cash',
+  OTHER = 'other'
+}
+
+// Interface for payment
+export interface Payment {
+  id: string;
+  orderId: string;
+  userId: string;
+  amount: number;
+  referenceCode: string;
+  receiptNumber?: string; // Added receiptNumber property
+  paymentMethod: string;
+  status: PaymentStatus;
+  createdAt: number;
+  updatedAt?: number;
+  completedAt?: number;
+  notes?: string;
+  metadata?: Record<string, any>;
+}
+
+// Interface for payment form data
+export interface PaymentFormData {
+  orderId: string;
+  amount: number;
+  paymentMethod: string;
+  referenceCode: string;
+  notes?: string;
+}
+
+// Helper function to convert Firestore document to Payment with proper timestamp handling
+function convertFirestoreDocToPayment(doc: QueryDocumentSnapshot<DocumentData>): Payment {
+  const data = doc.data();
+  
+  // Convert Firestore Timestamp objects to numbers
+  const createdAt = data.createdAt instanceof Timestamp ? 
+    data.createdAt.toMillis() : data.createdAt || Date.now();
+  
+  const completedAt = data.completedAt instanceof Timestamp ? 
+    data.completedAt.toMillis() : data.completedAt;
+  
+  const updatedAt = data.updatedAt instanceof Timestamp ? 
+    data.updatedAt.toMillis() : data.updatedAt || Date.now();
+  
+  return {
+    ...data,
+    id: doc.id,
+    createdAt,
+    completedAt,
+    updatedAt
+  } as Payment;
+}
+
+// Generate a unique reference code for payments
+export function generateReferenceCode(): string {
+  const timestamp = Date.now().toString().slice(-6);
+  const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+  return `PAY-${timestamp}-${random}`;
+}
+
+// Create or update a payment
+export async function savePayment(paymentData: Payment): Promise<string | null> {
+  try {
+    if (!paymentData) {
+      console.error('Invalid payment data');
+      toast.error('Invalid payment data');
+      return null;
+    }
+    
+    const paymentId = paymentData.id || `payment_${Date.now()}`;
+    const paymentRef = doc(firestore, 'payments', paymentId);
+    
+    const timestamp = Date.now();
+    const updatedPayment = {
+      ...paymentData,
+      id: paymentId,
+      createdAt: paymentData.createdAt || timestamp,
+      updatedAt: timestamp,
+      // Set completedAt if status is COMPLETED
+      ...(paymentData.status === PaymentStatus.COMPLETED && !paymentData.completedAt 
+        ? { completedAt: timestamp } 
+        : {})
+    };
+    
+    await setDoc(paymentRef, updatedPayment);
+    toast.success('Payment saved successfully');
+    return paymentId;
+  } catch (error: any) {
+    console.error('Error saving payment:', error);
+    toast.error(`Failed to save payment: ${error.message || 'Unknown error'}`);
+    return null;
+  }
+}
+
+// Get a single payment by ID
+export async function getPaymentById(id: string): Promise<Payment | null> {
+  try {
+    if (!id) {
+      console.error('Invalid payment ID');
+      return null;
+    }
+    
+    const paymentRef = doc(firestore, 'payments', id);
+    const snapshot = await getDoc(paymentRef);
+    
+    if (!snapshot.exists()) {
+      console.log(`Payment ${id} not found`);
+      return null;
+    }
+    
+    const data = snapshot.data();
+    
+    // Convert Firestore Timestamp objects to numbers
+    const createdAt = data.createdAt instanceof Timestamp ? 
+      data.createdAt.toMillis() : data.createdAt || Date.now();
+    
+    const completedAt = data.completedAt instanceof Timestamp ? 
+      data.completedAt.toMillis() : data.completedAt;
+    
+    const updatedAt = data.updatedAt instanceof Timestamp ? 
+      data.updatedAt.toMillis() : data.updatedAt || Date.now();
+    
+    return { 
+      ...data, 
+      id,
+      createdAt,
+      completedAt,
+      updatedAt
+    } as Payment;
+  } catch (error) {
+    console.error('Error getting payment by ID:', error);
+    toast.error('Failed to load payment details');
+    return null;
+  }
+}
+
+// Get payments by order ID
+export async function getPaymentsByOrderId(orderId: string): Promise<Payment[]> {
+  try {
+    if (!orderId) {
+      console.error('Invalid order ID');
+      return [];
+    }
+    
+    const paymentsRef = collection(firestore, 'payments');
+    const paymentsQuery = query(paymentsRef, where('orderId', '==', orderId), orderBy('createdAt', 'desc'));
+    const snapshot = await getDocs(paymentsQuery);
+    
+    if (snapshot.empty) {
+      console.log(`No payments found for order ${orderId}`);
+      return [];
+    }
+    
+    return snapshot.docs.map(doc => {
+      const data = doc.data();
+      
+      // Convert Firestore Timestamp objects to numbers
+      const createdAt = data.createdAt instanceof Timestamp ? 
+        data.createdAt.toMillis() : data.createdAt || Date.now();
+      
+      const completedAt = data.completedAt instanceof Timestamp ? 
+        data.completedAt.toMillis() : data.completedAt;
+      
+      const updatedAt = data.updatedAt instanceof Timestamp ? 
+        data.updatedAt.toMillis() : data.updatedAt || Date.now();
+      
+      return {
+        ...data,
+        id: doc.id,
+        createdAt,
+        completedAt,
+        updatedAt
+      };
+    }) as Payment[];
+  } catch (error) {
+    console.error('Error getting payments by order ID:', error);
+    toast.error('Failed to load order payments');
+    // Return empty array instead of throwing to prevent issues
+    return [];
+  }
+}
+
+// Get payments by user ID
+export async function getPaymentsByUserId(userId: string): Promise<Payment[]> {
+  try {
+    if (!userId) {
+      console.error('Invalid user ID');
+      return [];
+    }
+    
+    const paymentsRef = collection(firestore, 'payments');
+    const paymentsQuery = query(paymentsRef, where('userId', '==', userId), orderBy('createdAt', 'desc'));
+    const snapshot = await getDocs(paymentsQuery);
+    
+    if (snapshot.empty) {
+      console.log(`No payments found for user ${userId}`);
+      return [];
+    }
+    
+    const payments = snapshot.docs.map(doc => {
+      const data = doc.data();
+      
+      // Convert Firestore Timestamp objects to numbers
+      const createdAt = data.createdAt instanceof Timestamp ? 
+        data.createdAt.toMillis() : data.createdAt || Date.now();
+      
+      const completedAt = data.completedAt instanceof Timestamp ? 
+        data.completedAt.toMillis() : data.completedAt;
+      
+      const updatedAt = data.updatedAt instanceof Timestamp ? 
+        data.updatedAt.toMillis() : data.updatedAt || Date.now();
+      
+      return {
+        ...data,
+        id: doc.id,
+        createdAt,
+        completedAt,
+        updatedAt
+      };
+    }) as Payment[];
+    
+    return payments;
+  } catch (error) {
+    console.error('Error getting user payments:', error);
+    toast.error('Failed to load user payment history');
+    // Return empty array instead of throwing to prevent infinite loading
+    return [];
+  }
+}
+
+// Get all payments
+export async function getAllPayments(): Promise<Payment[]> {
+  try {
+    const paymentsRef = collection(firestore, 'payments');
+    const paymentsQuery = query(paymentsRef, orderBy('createdAt', 'desc'));
+    const snapshot = await getDocs(paymentsQuery);
+    
+    if (snapshot.empty) {
+      console.log('No payments found');
+      return [];
+    }
+    
+    const payments = snapshot.docs.map(doc => {
+      const data = doc.data();
+      
+      // Convert Firestore Timestamp objects to numbers
+      const createdAt = data.createdAt instanceof Timestamp ? 
+        data.createdAt.toMillis() : data.createdAt || Date.now();
+      
+      const completedAt = data.completedAt instanceof Timestamp ? 
+        data.completedAt.toMillis() : data.completedAt;
+      
+      const updatedAt = data.updatedAt instanceof Timestamp ? 
+        data.updatedAt.toMillis() : data.updatedAt || Date.now();
+      
+      return {
+        ...data,
+        id: doc.id,
+        createdAt,
+        completedAt,
+        updatedAt
+      };
+    }) as Payment[];
+    
+    console.log(`Found ${payments.length} payments`);
+    return payments;
+  } catch (error) {
+    console.error('Error getting all payments:', error);
+    toast.error('Failed to load payments');
+    // Return empty array instead of throwing to prevent issues
+    return [];
+  }
+}
+
+// Update payment status with validation
+export async function updatePaymentStatus(id: string, status: PaymentStatus): Promise<boolean> {
+  try {
+    if (!id) {
+      console.error('Invalid payment ID');
+      toast.error('Invalid payment ID');
+      return false;
+    }
+    
+    // Get current payment to validate status transition
+    const payment = await getPaymentById(id);
+    if (!payment) {
+      toast.error('Payment not found');
+      return false;
+    }
+    
+    // Validate status transition
+    if (!isValidStatusTransition(payment.status, status)) {
+      toast.error(`Invalid status transition from ${payment.status} to ${status}`);
+      return false;
+    }
+    
+    const paymentRef = doc(firestore, 'payments', id);
+    const updateData: Record<string, any> = { 
+      status,
+      updatedAt: Date.now()
+    };
+    
+    // If status is completed, add completedAt timestamp
+    if (status === PaymentStatus.COMPLETED) {
+      updateData.completedAt = Date.now();
+    }
+    
+    await updateDoc(paymentRef, updateData);
+    
+    // If payment is completed, update the order status
+    if (status === PaymentStatus.COMPLETED) {
+      await updateOrderPaymentStatus(payment.orderId, true);
+    } else if (status === PaymentStatus.FAILED || status === PaymentStatus.CANCELLED) {
+      // Check if there are any other completed payments for this order
+      const orderPayments = await getPaymentsByOrderId(payment.orderId);
+      const hasCompletedPayment = orderPayments.some(p => 
+        p.id !== id && p.status === PaymentStatus.COMPLETED
+      );
+      
+      if (!hasCompletedPayment) {
+        await updateOrderPaymentStatus(payment.orderId, false);
+      }
+    }
+    
+    toast.success(`Payment status updated to ${status}`);
+    return true;
+  } catch (error: any) {
+    console.error('Error updating payment status:', error);
+    toast.error(`Failed to update payment status: ${error.message || 'Unknown error'}`);
+    return false;
+  }
+}
+// Helper function to convert Firestore Timestamp objects to numbers
+function convertFirestoreTimestamps(data: any): any {
+  // Create a new object to avoid modifying the original
+  const result = { ...data };
+  
+  // Handle createdAt timestamp
+  if (data.createdAt) {
+    result.createdAt = data.createdAt instanceof Timestamp ? 
+      data.createdAt.toMillis() : data.createdAt;
+  } else {
+    result.createdAt = Date.now();
+  }
+  
+  // Handle completedAt timestamp (if exists)
+  if (data.completedAt) {
+    result.completedAt = data.completedAt instanceof Timestamp ? 
+      data.completedAt.toMillis() : data.completedAt;
+  }
+  
+  // Handle updatedAt timestamp
+  if (data.updatedAt) {
+    result.updatedAt = data.updatedAt instanceof Timestamp ? 
+      data.updatedAt.toMillis() : data.updatedAt;
+  } else {
+    result.updatedAt = Date.now();
+  }
+  
+  return result;
+}
+// Helper function to validate status transitions
+function isValidStatusTransition(currentStatus: PaymentStatus, newStatus: PaymentStatus): boolean {
+  // Define valid status transitions
+  const validTransitions: Record<PaymentStatus, PaymentStatus[]> = {
+    [PaymentStatus.PENDING]: [
+      PaymentStatus.PROCESSING, 
+      PaymentStatus.COMPLETED, 
+      PaymentStatus.FAILED, 
+      PaymentStatus.CANCELLED
+    ],
+    [PaymentStatus.PROCESSING]: [
+      PaymentStatus.COMPLETED, 
+      PaymentStatus.FAILED
+    ],
+    [PaymentStatus.COMPLETED]: [
+      PaymentStatus.REFUNDED
+    ],
+    [PaymentStatus.FAILED]: [
+      PaymentStatus.PENDING, 
+      PaymentStatus.CANCELLED
+    ],
+    [PaymentStatus.REFUNDED]: [],
+    [PaymentStatus.CANCELLED]: [
+      PaymentStatus.PENDING
+    ]
+  };
+  
+  return validTransitions[currentStatus]?.includes(newStatus) || false;
+}
+
+// Update order payment status
+async function updateOrderPaymentStatus(orderId: string, isPaid: boolean): Promise<boolean> {
+  try {
+    if (!orderId) {
+      console.error('Invalid order ID');
+      return false;
+    }
+    
+    const orderRef = doc(firestore, 'orders', orderId);
+    
+    // Check if order exists
+    const orderSnapshot = await getDoc(orderRef);
+    if (!orderSnapshot.exists()) {
+      console.error(`Order ${orderId} not found`);
+      return false;
+    }
+    
+    await updateDoc(orderRef, { 
+      isPaid,
+      status: isPaid ? 'processing' : 'pending',
+      updatedAt: Date.now()
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Error updating order payment status:', error);
+    // Don't throw, just return false to prevent infinite loading
+    return false;
+  }
+}
+
+// Delete a payment (only if not completed)
+export async function deletePayment(id: string): Promise<boolean> {
+  try {
+    if (!id) {
+      console.error('Invalid payment ID');
+      toast.error('Invalid payment ID');
+      return false;
+    }
+    
+    const payment = await getPaymentById(id);
+    if (!payment) {
+      toast.error('Payment not found');
+      return false;
+    }
+    
+    // Don't allow deleting completed payments
+    if (payment.status === PaymentStatus.COMPLETED) {
+      toast.error('Cannot delete a completed payment');
+      return false;
+    }
+    
+    const paymentRef = doc(firestore, 'payments', id);
+    await deleteDoc(paymentRef);
+    
+    toast.success('Payment deleted successfully');
+    return true;
+  } catch (error: any) {
+    console.error('Error deleting payment:', error);
+    toast.error(`Failed to delete payment: ${error.message || 'Unknown error'}`);
+    return false;
+  }
+}
+
+// Get recent payments
+export async function getRecentPayments(limitCount: number = 10): Promise<Payment[]> {
+  try {
+    const paymentsRef = collection(firestore, 'payments');
+    // Use the imported limit function from Firestore with our renamed parameter
+    const paymentsQuery = query(
+      paymentsRef, 
+      orderBy('createdAt', 'desc'), 
+      limit(limitCount)
+    );
+    const snapshot = await getDocs(paymentsQuery);
+    
+    if (snapshot.empty) {
+      return [];
+    }
+    
+    const payments = snapshot.docs.map(doc => ({
+      ...doc.data(),
+      id: doc.id
+    })) as Payment[];
+    
+    return payments;
+  } catch (error) {
+    console.error('Error getting recent payments:', error);
+    toast.error('Failed to load recent payments');
+    // Return empty array instead of throwing to prevent infinite loading
+    return [];
+  }
+}
+
+// Get total revenue from completed payments
+export async function getTotalRevenue(): Promise<number> {
+  try {
+    const paymentsRef = collection(firestore, 'payments');
+    const paymentsQuery = query(paymentsRef, where('status', '==', PaymentStatus.COMPLETED));
+    const snapshot = await getDocs(paymentsQuery);
+    
+    if (snapshot.empty) {
+      return 0;
+    }
+    
+    const payments = snapshot.docs.map(doc => ({
+      ...doc.data(),
+      id: doc.id
+    })) as Payment[];
+    
+    return payments.reduce((total, payment) => total + (payment.amount || 0), 0);
+  } catch (error) {
+    console.error('Error calculating total revenue:', error);
+    toast.error('Failed to calculate total revenue');
+    // Return 0 instead of throwing to prevent issues
+    return 0;
+  }
+}
